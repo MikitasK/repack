@@ -29,15 +29,33 @@ function createSourceMap(source: string, content: string) {
 }
 
 function createDelegate(
-  getSourceMap: SymbolicatorDelegate['getSourceMap']
+  getSourceMap: SymbolicatorDelegate['getSourceMap'],
+  getSource: SymbolicatorDelegate['getSource'] = vi.fn(async () => {
+    throw new Error('Source is not available from the host compiler');
+  })
 ): SymbolicatorDelegate {
   return {
     getSourceMap,
-    getSource: vi.fn(async () => {
-      throw new Error('Source is not available from the host compiler');
-    }),
+    getSource,
     shouldIncludeFrame: () => true,
   };
+}
+
+function createSourceMapWithoutContent(source: string) {
+  return JSON.stringify({
+    version: 3,
+    sources: [source],
+    names: [],
+    mappings: 'AAAA',
+  });
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function getMockResults(): SymbolicatorResults {
@@ -168,6 +186,125 @@ describe('Symbolicator', () => {
       lineNumber: 1,
       column: 0,
     });
+  });
+
+  it('loads a source map once for repeated frames in one request', async () => {
+    const bundleUrl = 'http://localhost:8082/repeated.chunk.bundle';
+    const getSourceMap = vi.fn(async () =>
+      createSourceMap(
+        '[projectRoot]/src/Repeated.tsx',
+        'export const repeated = true;'
+      )
+    );
+    const symbolicator = new Symbolicator(createDelegate(getSourceMap));
+
+    const result = await symbolicator.process(logger, [
+      {
+        file: bundleUrl,
+        lineNumber: 1,
+        column: 0,
+        methodName: 'FirstFrame',
+      },
+      {
+        file: bundleUrl,
+        lineNumber: 1,
+        column: 0,
+        methodName: 'SecondFrame',
+      },
+    ]);
+
+    expect(getSourceMap).toHaveBeenCalledTimes(1);
+    expect(result.stack).toHaveLength(2);
+    expect(
+      result.stack.every((frame) => frame.file.endsWith('Repeated.tsx'))
+    ).toBe(true);
+  });
+
+  it('loads a fresh source map for each request', async () => {
+    const bundleUrl = 'http://localhost:8082/rebuilt.chunk.bundle';
+    const getSourceMap = vi
+      .fn<SymbolicatorDelegate['getSourceMap']>()
+      .mockResolvedValueOnce(
+        createSourceMap(
+          '[projectRoot]/src/BeforeRebuild.tsx',
+          'export const version = 1;'
+        )
+      )
+      .mockResolvedValueOnce(
+        createSourceMap(
+          '[projectRoot]/src/AfterRebuild.tsx',
+          'export const version = 2;'
+        )
+      );
+    const symbolicator = new Symbolicator(createDelegate(getSourceMap));
+    const stack = [
+      {
+        file: bundleUrl,
+        lineNumber: 1,
+        column: 0,
+        methodName: 'App',
+      },
+    ];
+
+    const beforeRebuild = await symbolicator.process(logger, stack);
+    const afterRebuild = await symbolicator.process(logger, stack);
+
+    expect(getSourceMap).toHaveBeenCalledTimes(2);
+    expect(beforeRebuild.stack[0]?.file).toBe(
+      '[projectRoot]/src/BeforeRebuild.tsx'
+    );
+    expect(afterRebuild.stack[0]?.file).toBe(
+      '[projectRoot]/src/AfterRebuild.tsx'
+    );
+  });
+
+  it('isolates source map consumers between concurrent requests', async () => {
+    const bundleUrl = 'http://localhost:8082/concurrent.chunk.bundle';
+    const firstSourceRequested = createDeferred<void>();
+    const releaseFirstSource = createDeferred<string>();
+    let getSourceCallCount = 0;
+    const getSource = vi.fn(async () => {
+      getSourceCallCount += 1;
+      if (getSourceCallCount === 1) {
+        firstSourceRequested.resolve();
+        return releaseFirstSource.promise;
+      }
+      return 'export const request = 2;';
+    });
+    const getSourceMap = vi
+      .fn<SymbolicatorDelegate['getSourceMap']>()
+      .mockResolvedValueOnce(
+        createSourceMapWithoutContent('[projectRoot]/src/FirstRequest.tsx')
+      )
+      .mockResolvedValueOnce(
+        createSourceMapWithoutContent('[projectRoot]/src/SecondRequest.tsx')
+      );
+    const symbolicator = new Symbolicator(
+      createDelegate(getSourceMap, getSource)
+    );
+    const stack = [
+      {
+        file: bundleUrl,
+        lineNumber: 1,
+        column: 0,
+        methodName: 'App',
+      },
+    ];
+
+    const firstRequest = symbolicator.process(logger, stack);
+    await firstSourceRequested.promise;
+
+    const secondResult = await symbolicator.process(logger, stack);
+    releaseFirstSource.resolve('export const request = 1;');
+    const firstResult = await firstRequest;
+
+    expect(getSourceMap).toHaveBeenCalledTimes(2);
+    expect(firstResult.stack[0]?.file).toBe(
+      '[projectRoot]/src/FirstRequest.tsx'
+    );
+    expect(secondResult.stack[0]?.file).toBe(
+      '[projectRoot]/src/SecondRequest.tsx'
+    );
   });
 });
 
