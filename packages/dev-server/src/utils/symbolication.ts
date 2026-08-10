@@ -1,4 +1,5 @@
 import { URL } from 'node:url';
+import type { RawIndexMap, RawSourceMap } from 'source-map';
 
 interface StackFrameLike {
   file: string | null;
@@ -6,7 +7,7 @@ interface StackFrameLike {
 
 export function normalizeInvalidWebpackSourceUrls(
   rawSourceMap: string | Buffer
-) {
+): string | RawSourceMap | RawIndexMap {
   const sourceMapText = rawSourceMap.toString();
   if (!sourceMapText.includes('webpack://')) {
     return sourceMapText;
@@ -58,7 +59,9 @@ export function normalizeInvalidWebpackSourceUrls(
   };
 
   normalize(sourceMap);
-  return JSON.stringify(sourceMap);
+  // SourceMapConsumer accepts parsed maps. Returning the object avoids
+  // serializing it here only for the consumer to parse it again.
+  return sourceMap as RawSourceMap | RawIndexMap;
 }
 
 export function isGeneratedBundleFrame(frame: StackFrameLike) {
