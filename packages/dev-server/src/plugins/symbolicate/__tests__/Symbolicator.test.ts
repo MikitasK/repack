@@ -358,6 +358,46 @@ describe('logSymbolicatedStackFrame', () => {
     expect(info).not.toHaveBeenCalled();
   });
 
+  it('includes the remote name for a federated source frame', () => {
+    const info = vi.fn();
+    const runtimeLogger = { info } as unknown as FastifyBaseLogger;
+
+    logSymbolicatedStackFrame(
+      runtimeLogger,
+      [
+        {
+          file: 'http://localhost:9007/android/__federation_expose_RegistrationNavigator.registration.chunk.bundle',
+          lineNumber: 100,
+          column: 20,
+          methodName: 'App',
+        },
+        {
+          file: 'http://localhost:8081/index.bundle?platform=android',
+          lineNumber: 200,
+          column: 30,
+          methodName: 'renderWithHooks',
+        },
+      ],
+      {
+        stack: [
+          {
+            file: 'http://localhost:9007/__repack_source__/[projectRoot]/src/App.tsx',
+            lineNumber: 13,
+            column: 17,
+            methodName: 'App',
+            collapse: false,
+          },
+        ],
+        codeFrame: null,
+      }
+    );
+
+    expect(info).toHaveBeenCalledWith({
+      msg: 'Symbolicated stack frame: registration/src/App.tsx:13:17',
+      methodName: 'App',
+    });
+  });
+
   it('does not report a generated bundle frame as symbolicated', () => {
     const info = vi.fn();
     const runtimeLogger = { info } as unknown as FastifyBaseLogger;
