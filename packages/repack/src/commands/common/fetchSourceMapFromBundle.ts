@@ -1,5 +1,14 @@
 const FETCH_TIMEOUT_MS = 2_000;
 const CACHE_TTL_MS = 10_000;
+const REMOTE_SOURCE_PATH_PREFIX = '/__repack_source__/';
+const PROJECT_ROOT_SOURCE_PATTERN = /^\[projectRoot(?:\^\d+)?\][\\/]/;
+
+interface SourceMapLike {
+  version?: unknown;
+  mappings?: unknown;
+  sources?: unknown[];
+  sections?: Array<{ map?: SourceMapLike }>;
+}
 
 interface CacheEntry {
   expiresAt: number;
@@ -46,20 +55,87 @@ export function toHttpUrl(fileUrl: string): URL | undefined {
   return undefined;
 }
 
-function looksLikeSourceMap(buffer: Buffer): boolean {
+function prepareSourceMap(buffer: Buffer, bundleUrl: URL): Buffer | undefined {
   try {
-    const map = JSON.parse(buffer.toString('utf8')) as {
-      version?: unknown;
-      mappings?: unknown;
-      sections?: unknown;
+    const map = JSON.parse(buffer.toString('utf8')) as SourceMapLike;
+    if (
+      map?.version !== 3 ||
+      (typeof map.mappings !== 'string' && !Array.isArray(map.sections))
+    ) {
+      return undefined;
+    }
+
+    const addRemoteOrigin = (sourceMap: SourceMapLike) => {
+      if (Array.isArray(sourceMap.sources)) {
+        sourceMap.sources = sourceMap.sources.map((source) => {
+          if (
+            typeof source !== 'string' ||
+            !PROJECT_ROOT_SOURCE_PATTERN.test(source)
+          ) {
+            return source;
+          }
+
+          const sourceUrl = new URL(bundleUrl.origin);
+          sourceUrl.pathname = `${REMOTE_SOURCE_PATH_PREFIX}${source}`;
+          return sourceUrl.href;
+        });
+      }
+
+      for (const section of sourceMap.sections ?? []) {
+        if (section.map) {
+          addRemoteOrigin(section.map);
+        }
+      }
     };
-    return (
-      map?.version === 3 &&
-      (typeof map.mappings === 'string' || Array.isArray(map.sections))
-    );
+
+    addRemoteOrigin(map);
+    return Buffer.from(JSON.stringify(map));
   } catch {
+    return undefined;
+  }
+}
+
+export function getRemoteSource(fileUrl: string):
+  | {
+      file: string;
+      origin: string;
+    }
+  | undefined {
+  const sourceUrl = toHttpUrl(fileUrl);
+  if (!sourceUrl?.pathname.startsWith(REMOTE_SOURCE_PATH_PREFIX)) {
+    return undefined;
+  }
+
+  const file = decodeURIComponent(
+    sourceUrl.pathname.slice(REMOTE_SOURCE_PATH_PREFIX.length)
+  );
+  if (!PROJECT_ROOT_SOURCE_PATTERN.test(file)) {
+    return undefined;
+  }
+
+  return { file, origin: sourceUrl.origin };
+}
+
+export async function openRemoteStackFrame(
+  fileUrl: string,
+  lineNumber: number
+): Promise<boolean> {
+  const source = getRemoteSource(fileUrl);
+  if (!source) {
     return false;
   }
+
+  const response = await fetch(new URL('/open-stack-frame', source.origin), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ file: source.file, lineNumber }),
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(`Remote dev server returned ${response.status}`);
+  }
+
+  return true;
 }
 
 async function fetchBuffer(url: URL): Promise<Buffer | undefined> {
@@ -103,7 +179,7 @@ async function lookupSourceMap(fileUrl: string): Promise<Buffer | undefined> {
   }
 
   const sourceMap = await fetchBuffer(sourceMapUrl);
-  return sourceMap && looksLikeSourceMap(sourceMap) ? sourceMap : undefined;
+  return sourceMap ? prepareSourceMap(sourceMap, bundleUrl) : undefined;
 }
 
 /**

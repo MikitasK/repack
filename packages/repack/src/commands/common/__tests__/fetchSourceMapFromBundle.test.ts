@@ -1,5 +1,7 @@
 import {
   fetchSourceMapFromBundle,
+  getRemoteSource,
+  openRemoteStackFrame,
   toHttpUrl,
 } from '../fetchSourceMapFromBundle.js';
 
@@ -68,10 +70,44 @@ describe('fetchSourceMapFromBundle', () => {
       [mapUrl]: { body: VALID_SOURCE_MAP },
     });
 
-    await expect(fetchSourceMapFromBundle(bundleUrl)).resolves.toEqual(
-      Buffer.from(VALID_SOURCE_MAP)
-    );
+    const sourceMap = await fetchSourceMapFromBundle(bundleUrl);
+
+    expect(JSON.parse(sourceMap!.toString())).toMatchObject({
+      sources: [
+        'http://localhost:8082/__repack_source__/[projectRoot]/src/App.tsx',
+      ],
+    });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves the remote owner for project sources in indexed maps', async () => {
+    const bundleUrl = 'http://localhost:8083/android/remote.chunk.bundle';
+    const sourceMap = JSON.stringify({
+      version: 3,
+      sections: [
+        {
+          offset: { line: 0, column: 0 },
+          map: {
+            version: 3,
+            sources: ['[projectRoot^1]/shared/App.tsx'],
+            names: [],
+            mappings: 'AAAA',
+          },
+        },
+      ],
+    });
+    mockFetch({
+      [bundleUrl]: {
+        body: 'code();\n//# sourceMappingURL=remote.chunk.bundle.map',
+      },
+      [`${bundleUrl}.map`]: { body: sourceMap },
+    });
+
+    const result = await fetchSourceMapFromBundle(bundleUrl);
+
+    expect(JSON.parse(result!.toString()).sections[0].map.sources).toEqual([
+      'http://localhost:8083/__repack_source__/[projectRoot^1]/shared/App.tsx',
+    ]);
   });
 
   it('rejects a response that is not a source map', async () => {
@@ -96,5 +132,54 @@ describe('fetchSourceMapFromBundle', () => {
     await fetchSourceMapFromBundle(bundleUrl);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('remote source frames', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('extracts the owning dev server and project-relative file', () => {
+    expect(
+      getRemoteSource(
+        'http://localhost:8082/__repack_source__/[projectRoot]/src/App.tsx'
+      )
+    ).toEqual({
+      file: '[projectRoot]/src/App.tsx',
+      origin: 'http://localhost:8082',
+    });
+  });
+
+  it('forwards editor navigation to the owning dev server', async () => {
+    const fetchMock = mockFetch({
+      'http://localhost:8082/open-stack-frame': { body: 'OK' },
+    });
+
+    await expect(
+      openRemoteStackFrame(
+        'http://localhost:8082/__repack_source__/[projectRoot]/src/App.tsx',
+        13
+      )
+    ).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL('http://localhost:8082/open-stack-frame'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          file: '[projectRoot]/src/App.tsx',
+          lineNumber: 13,
+        }),
+      })
+    );
+  });
+
+  it('leaves local source frames to the current dev server', async () => {
+    const fetchMock = jest.spyOn(globalThis, 'fetch');
+
+    await expect(
+      openRemoteStackFrame('[projectRoot]/src/App.tsx', 13)
+    ).resolves.toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

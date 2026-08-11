@@ -15,6 +15,7 @@ import {
   getDevMiddleware,
   getMaxWorkers,
   getMimeType,
+  openRemoteStackFrame,
   parseUrl,
   resetPersistentCache,
   resolveProjectPath,
@@ -164,6 +165,7 @@ export async function start(
           resolveProjectPath: (filepath) => {
             return resolveProjectPath(filepath, cliConfig.root);
           },
+          openStackFrame: openRemoteStackFrame,
         },
         symbolicator: {
           getSource: (url) => {
