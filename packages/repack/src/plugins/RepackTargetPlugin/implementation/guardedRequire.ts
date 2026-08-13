@@ -47,20 +47,8 @@ module.exports = function () {
 
   // Copy all properties from the original function to the wrapped function
   Object.getOwnPropertyNames(originalWebpackRequire).forEach((key) => {
-    var descriptor = Object.getOwnPropertyDescriptor(
-      originalWebpackRequire,
-      key
-    );
-    var wrapperDescriptor = Object.getOwnPropertyDescriptor(
-      guardedWebpackRequire,
-      key
-    );
-
-    // Function intrinsics such as `prototype`, `arguments`, and `caller` are
-    // non-configurable on the wrapper and cannot be redefined in strict mode.
-    if (descriptor && (!wrapperDescriptor || wrapperDescriptor.configurable)) {
-      Object.defineProperty(guardedWebpackRequire, key, descriptor);
-    }
+    // @ts-ignore
+    guardedWebpackRequire[key] = originalWebpackRequire[key];
   });
 
   // @ts-ignore
