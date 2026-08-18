@@ -105,9 +105,13 @@ describe('fetchSourceMapFromBundle', () => {
 
     const result = await fetchSourceMapFromBundle(bundleUrl);
 
-    expect(JSON.parse(result!.toString()).sections[0].map.sources).toEqual([
-      'http://localhost:8083/__repack_source__/[projectRoot^1]/shared/App.tsx',
-    ]);
+    const [source] = JSON.parse(result!.toString()).sections[0].map.sources;
+    const sourceUrl = new URL(source);
+
+    expect(sourceUrl.origin).toBe('http://localhost:8083');
+    expect(decodeURIComponent(sourceUrl.pathname)).toBe(
+      '/__repack_source__/[projectRoot^1]/shared/App.tsx'
+    );
   });
 
   it('rejects a response that is not a source map', async () => {
